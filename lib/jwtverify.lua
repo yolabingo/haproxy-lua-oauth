@@ -27,7 +27,6 @@ if not config then
       publicKey = nil,
       issuer = nil,
       audience = nil,
-      hmacSecret = nil
   }
 end
 
@@ -37,7 +36,6 @@ local openssl = {
   pkey = require 'openssl.pkey',
   digest = require 'openssl.digest',
   x509 = require 'openssl.x509',
-  hmac = require 'openssl.hmac'
 }
 
 local function log(msg)
@@ -134,54 +132,8 @@ local function rs256SignatureIsValid(token, publicKey)
   return isVerified
 end
 
-local function hs256SignatureIsValid(token, secret)
-  local hmac = openssl.hmac.new(secret, 'SHA256')
-  local checksum = hmac:final(token.header .. '.' .. token.payload)
-  return checksum == token.signaturedecoded
-end
-
-local function hs512SignatureIsValid(token, secret)
-  local hmac = openssl.hmac.new(secret, 'SHA512')
-  local checksum = hmac:final(token.header .. '.' .. token.payload)
-  return checksum == token.signaturedecoded
-end
-
 local function expirationIsValid(token)
   return os.difftime(token.payloaddecoded.exp, core.now().sec) > 0
-end
-
-local function issuerIsValid(token, expectedIssuer)
-  return token.payloaddecoded.iss == expectedIssuer
-end
-
--- Checks if the audience in the token is listed in the
--- OAUTH_AUDIENCE environment variable. Both the token audience
--- and the environment variable can contain multiple audience values, 
--- separated by commas. Each value will be checked.
-local function audienceIsValid(token, expectedAudienceParam)
-  
-  -- Convert OAUTH_AUDIENCE environment variable to a table,
-  -- even if it contains only one value
-  local expectedAudiences = expectedAudienceParam
-  if type(expectedAudiences) == "string" then
-    -- split multiple values using a space as the delimiter
-    expectedAudiences = core.tokenize(expectedAudienceParam, " ")
-  end
-
-  -- Convert 'aud' claim to a table, even if it contains only one value
-  local receivedAudiences = token.payloaddecoded.aud
-  if type(token.payloaddecoded.aud) == "string" then
-    receivedAudiences ={}
-    receivedAudiences[1] = token.payloaddecoded.aud
-  end
-
-  for _, receivedAudience in ipairs(receivedAudiences) do
-    if contains(expectedAudiences, receivedAudience) then
-      return true
-    end
-  end
-
-  return false
 end
 
 local function setVariablesFromPayload(txn, decodedPayload)
@@ -194,7 +146,6 @@ local function jwtverify(txn)
   local pem = config.publicKey
   local issuer = config.issuer
   local audience = config.audience
-  local hmacSecret = config.hmacSecret
 
   -- 1. Decode and parse the JWT
   local token = decodeJwt(txn.sf:req_hdr("Authorization"))
@@ -219,16 +170,6 @@ local function jwtverify(txn)
       log("Signature not valid.")
       goto out
     end
-  elseif token.headerdecoded.alg == 'HS256' then
-    if hs256SignatureIsValid(token, hmacSecret) == false then
-      log("Signature not valid.")
-      goto out
-    end
-  elseif token.headerdecoded.alg == 'HS512' then
-    if hs512SignatureIsValid(token, hmacSecret) == false then
-      log("Signature not valid.")
-      goto out
-    end
   end
 
   -- 4. Verify that the token is not expired
@@ -237,17 +178,8 @@ local function jwtverify(txn)
     goto out
   end
 
-  -- 5. Verify the issuer
-  if issuer ~= nil and issuerIsValid(token, issuer) == false then
-    log("Issuer not valid.")
-    goto out
-  end
-
-  -- 6. Verify the audience
-  if audience ~= nil and audienceIsValid(token, audience) == false then
-    log("Audience not valid.")
-    goto out
-  end
+  -- 5. Verify the issuer -- skipped
+  -- 6. Verify the audience -- skipped
 
   -- 8. Set authorized variable
   log("req.authorized = true")
@@ -265,16 +197,10 @@ end
 -- Called after the configuration is parsed.
 -- Loads the OAuth public key for validating the JWT signature.
 core.register_init(function()
-  config.issuer = os.getenv("OAUTH_ISSUER")
-  config.audience = os.getenv("OAUTH_AUDIENCE")
-  
   -- when using an RS256 signature
   local publicKeyPath = os.getenv("OAUTH_PUBKEY_PATH") 
   local pem = readAll(publicKeyPath)
   config.publicKey = pem
-  
-  -- when using an HS256 or HS512 signature
-  config.hmacSecret = os.getenv("OAUTH_HMAC_SECRET")
   
   log("PublicKeyPath: " .. publicKeyPath)
   log("Issuer: " .. (config.issuer or "<none>"))
